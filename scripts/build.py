@@ -77,6 +77,7 @@ def load_csv():
 # ═══════════════════════════════════════════════════════════════════════
 
 def match_pdfs(rows):
+    # TODO: 后续应将 PDF 标识从文件名升级为相对路径，避免子目录同名文件碰撞。
     global pdf_paths
     pdfs = sorted(Path(WORK).rglob('*.pdf'))
     pdf_paths = {p.name: p for p in pdfs}
@@ -126,42 +127,152 @@ def match_pdfs(rows):
                     assigned.update([inv.name] + ([trv.name] if trv else []))
                     break
 
-    # ── 滴滴：无法通过文件名确定归属，收集待人工确认 ──
-    didi_inv  = sorted([p for p in pdfs if '滴滴电子发票' in p.name and p.name not in assigned])
-    didi_trv  = sorted([p for p in pdfs if '滴滴出行行程报销单' in p.name and p.name not in assigned])
-    didi_rows = sorted([3 + i for i in range(len(rows))
-                        if (3 + i) not in mapping
-                        and any(k in rows[i][11] for k in ['滴滴', '打车'])],
-                       key=lambda r: rows[r - 3][12])
-
-    if didi_inv or didi_trv:
-        review = {
-            "_note": "以下滴滴 PDF 无法通过文件名规则确定归属行，请人工建立映射后写入 pdf_mapping.json",
-            "unmatched_didi_invoices": [p.name for p in didi_inv],
-            "unmatched_didi_travels": [p.name for p in didi_trv],
-            "unmatched_taxi_rows": [{"row": r, "amount": rows[r - 3][5], "desc": rows[r - 3][11]}
-                                    for r in didi_rows],
-        }
-        review_path = WORK / 'pdf_mapping_review.json'
-        with open(review_path, 'w', encoding='utf-8') as f:
-            json.dump(review, f, ensure_ascii=False, indent=2)
-        print(f'  ⚠ 滴滴 PDF {len(didi_inv)} 张发票 + {len(didi_trv)} 张行程单 无法自动匹配')
-        print(f'  → 已生成 {review_path}，请人工确认后写入 pdf_mapping.json')
-
+    # ── 滴滴：无法通过文件名确定归属，留待 write_pdf_review_if_needed 处理 ──
     unmatched = [p.name for p in pdfs if p.name not in assigned]
     unmapped  = [3 + i for i in range(len(rows)) if (3 + i) not in mapping]
     return mapping, unmatched, unmapped
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3. JSON 映射
+# 3. PDF 状态计算与人工映射校验
 # ═══════════════════════════════════════════════════════════════════════
 
-def load_json_map(name):
+def valid_data_rows(rows):
+    """返回有效 Excel 数据行号集合，例如 {3, 4, 5, ...}"""
+    return {3 + i for i in range(len(rows))}
+
+
+def flatten_pdf_map(pdf_map):
+    """返回 pdf_map 中已经使用的 PDF 文件名集合"""
+    return {pf for v in pdf_map.values() if v for pf in v}
+
+
+def recompute_pdf_status(rows, pdf_map):
+    """基于合并后的 pdf_map 重新计算 unmatched_pdfs 和 unmapped_rows"""
+    all_pdfs = {p.name for p in Path(WORK).rglob('*.pdf')}
+    in_use = flatten_pdf_map(pdf_map)
+    unmatched = sorted(all_pdfs - in_use)
+    unmapped = sorted(r for r in valid_data_rows(rows) if not pdf_map.get(r))
+    return unmatched, unmapped
+
+
+def load_pdf_mapping(name, valid_rows, all_pdf_paths, auto_pdf_map=None):
+    """读取并校验 pdf_mapping.json。返回 (manual_map, errors, warnings)"""
     p = WORK / name
-    if p.exists():
+    if not p.exists():
+        return {}, [], []
+
+    errors = []
+    warnings = []
+
+    try:
         with open(p, encoding='utf-8') as f:
-            return {int(k): v for k, v in json.load(f).items()}
-    return {}
+            raw = json.load(f)
+    except json.JSONDecodeError as e:
+        errors.append(f'{name} 格式错误: {e}')
+        return {}, errors, warnings
+
+    if not isinstance(raw, dict):
+        errors.append(f'{name} 必须是 JSON 对象')
+        return {}, errors, warnings
+
+    # 收集所有文件中引用的 PDF 用于重复检测
+    seen_pdfs = {}  # filename -> row
+
+    manual_map = {}
+    for key, val in raw.items():
+        # 1. row key 校验
+        try:
+            row = int(key)
+        except (ValueError, TypeError):
+            errors.append(f'{name} 行号 "{key}" 不是有效数字')
+            continue
+        if row not in valid_rows:
+            errors.append(f'{name} 行号 R{row} 不在有效数据行范围内（有效范围: R{min(valid_rows)}-R{max(valid_rows)}）')
+            continue
+
+        # 2. value 类型校验
+        if not isinstance(val, list):
+            errors.append(f'{name} R{row} 的值必须是数组，当前类型: {type(val).__name__}')
+            continue
+
+        # 3. 文件存在校验
+        for fn in val:
+            if fn not in all_pdf_paths:
+                errors.append(f'{name} R{row} 引用了不存在的 PDF: {fn}')
+
+        # 4. 重复引用校验
+        for fn in val:
+            if fn in seen_pdfs and seen_pdfs[fn] != row:
+                errors.append(f'PDF 被重复映射到多个行: {fn} → R{seen_pdfs[fn]}, R{row}')
+            else:
+                seen_pdfs[fn] = row
+
+        # 5. 空数组处理
+        if not val:
+            warnings.append(f'{name} R{row} 是空数组，不计入 PDF 映射')
+
+        manual_map[row] = list(val)
+
+    if errors:
+        return manual_map, errors, warnings
+
+    # 6. 人工覆盖自动映射时提示
+    if auto_pdf_map:
+        for row in manual_map:
+            if manual_map[row] and row in auto_pdf_map and auto_pdf_map[row]:
+                if manual_map[row] != auto_pdf_map[row]:
+                    warnings.append(
+                        f'{name} 覆盖自动 PDF 映射 R{row}'
+                        f'  自动: {auto_pdf_map[row]}'
+                        f'  人工: {manual_map[row]}')
+
+    return manual_map, errors, warnings
+
+
+def write_pdf_review_if_needed(rows, pdf_map):
+    """根据当前 PDF 状态刷新 pdf_mapping_review.json。
+    只包含当前仍未自动匹配、且未被人工映射解决的待确认 PDF。"""
+    all_pdfs = {p.name for p in Path(WORK).rglob('*.pdf')}
+    in_use = flatten_pdf_map(pdf_map)
+    still_unmatched = sorted(all_pdfs - in_use)
+
+    # 滴滴相关 PDF
+    didi_inv  = sorted([fn for fn in still_unmatched if '滴滴电子发票' in fn])
+    didi_trv  = sorted([fn for fn in still_unmatched if '滴滴出行行程报销单' in fn])
+    # 高德相关（也属于无法自动匹配的聚合打车类）
+    other_unmatched = sorted([fn for fn in still_unmatched
+                             if '滴滴' not in fn and '高德' not in fn])
+
+    # 仍然没有 PDF 的行中，打车相关的行
+    unmapped_taxi_rows = []
+    for i in range(len(rows)):
+        r = 3 + i
+        if r in pdf_map and pdf_map[r]:
+            continue
+        desc = rows[i][11]
+        if any(k in desc for k in ['滴滴', '打车', '出行', 'T3', '如祺', '风韵', '曹操', '享道', '高德']):
+            unmapped_taxi_rows.append({"row": r, "amount": rows[i][5], "desc": desc})
+
+    review = {
+        "_note": "当前仍有以下 PDF 无法自动确定归属行，请人工确认后写入 pdf_mapping.json。已写入 pdf_mapping.json 的 PDF 不会出现在此清单中。",
+        "pending_didi_invoices": didi_inv,
+        "pending_didi_travels": didi_trv,
+        "other_unmatched_pdfs": other_unmatched,
+        "unmapped_taxi_rows": unmapped_taxi_rows,
+    }
+
+    review_path = WORK / 'pdf_mapping_review.json'
+    if didi_inv or didi_trv:
+        with open(review_path, 'w', encoding='utf-8') as f:
+            json.dump(review, f, ensure_ascii=False, indent=2)
+        print(f'  → 已刷新 {review_path}')
+    elif review_path.exists():
+        # 没有待确认项时写入空状态
+        review["_note"] = "当前没有待人工确认的 PDF"
+        with open(review_path, 'w', encoding='utf-8') as f:
+            json.dump(review, f, ensure_ascii=False, indent=2)
+        print(f'  ✓ 没有待确认 PDF，{review_path} 已清空')
+    return review
 
 # ═══════════════════════════════════════════════════════════════════════
 # 4. 填充数据
@@ -395,34 +506,93 @@ def main():
     # 1. 数据
     rows = load_csv()
     year_month = rows[0][6]
-    # 校验月份格式
     for i, rd in enumerate(rows):
         if not re.match(r'^\d{4}-\d{2}$', rd[6]):
             print(f'  WARN: R{3+i} 月份格式异常 "{rd[6]}"，应为 YYYY-MM')
-    print(f'  数据行: {len(rows)}  文件名月份: {year_month}')
+    print(f'  数据行: {len(rows)}  月份: {year_month}')
+    data_rows = valid_data_rows(rows)
 
-    # 2. PDF
-    pdf_map, unmatched_pdfs, unmapped_rows = match_pdfs(rows)
-    if unmatched_pdfs:
-        print(f'  未匹配 PDF: {unmatched_pdfs}')
+    # 2. PDF 自动匹配
+    pdf_map, auto_unmatched, auto_unmapped = match_pdfs(rows)
+    if auto_unmatched:
+        print(f'  自动匹配未覆盖的 PDF: {auto_unmatched}')
+    if auto_unmapped:
+        print(f'  无 PDF 的行: R{auto_unmapped}')
+
+    # 3. 加载并校验人工 PDF 映射
+    manual_map, pdf_errors, pdf_warnings = load_pdf_mapping(
+        'pdf_mapping.json', data_rows, pdf_paths,
+        auto_pdf_map=pdf_map)
+
+    # 4. 校验失败必须 fatal
+    if pdf_errors:
+        for e in pdf_errors:
+            print(f'  \033[31mERROR: {e}\033[0m')
+        die('pdf_mapping.json 校验未通过，已阻止保存。')
+
+    # 5. 显示人工映射提示
+    if pdf_warnings:
+        for w in pdf_warnings:
+            print(f'  \033[33mWARN: {w}\033[0m')
+
+    # 6. 合并人工映射
+    if manual_map:
+        resolved = set()
+        for r, pfs in manual_map.items():
+            if not pfs:
+                continue
+            if r in pdf_map and pdf_map[r]:
+                resolved.update(pf for pf in pfs)
+            pdf_map[r] = pfs
+            resolved.update(pf for pf in pfs if pf in auto_unmatched)
+        if resolved:
+            print(f'  已由人工映射解决: {sorted(resolved)}')
+        print(f'  人工映射行: {sorted(r for r in manual_map if manual_map[r])}')
+
+    # 7. 合并后重新计算真实未匹配状态
+    unmatched_pdfs, unmapped_rows = recompute_pdf_status(rows, pdf_map)
+    # 区分语义
+    pending_review = sorted([pf for pf in unmatched_pdfs
+                            if '滴滴' in pf or '高德' in pf])
+    orphan_pdfs = sorted([pf for pf in unmatched_pdfs
+                         if pf not in pending_review])
+
+    if pending_review:
+        print(f'  ⚠ 待人工确认 PDF ({len(pending_review)}): {pending_review}')
+    if orphan_pdfs:
+        print(f'  ⚠ 其他未匹配 PDF ({len(orphan_pdfs)}): {orphan_pdfs}')
     if unmapped_rows:
         print(f'  无 PDF 的行: R{unmapped_rows}')
+    if not unmatched_pdfs and not unmapped_rows:
+        print('  ✓ 所有 PDF 已匹配，所有行已有 PDF')
 
-    # 3. JSON 覆盖（自动匹配之后，允许手动修正）
-    pdf_map.update(load_json_map('pdf_mapping.json'))
-    pay_map  = load_json_map('payment_mapping.json')
-    scan_map = load_json_map('scan_mapping.json')
+    # 8. 刷新 review 文件（基于合并后状态）
+    write_pdf_review_if_needed(rows, pdf_map)
 
-    # 4. 文档检查（保存前先看一眼缺什么）
+    # 9. 加载付款截图和扫描件映射
+    pay_map = {}
+    pay_path = WORK / 'payment_mapping.json'
+    if pay_path.exists():
+        with open(pay_path, encoding='utf-8') as f:
+            raw = json.load(f)
+            pay_map = {int(k): v for k, v in raw.items()}
+
+    scan_map = {}
+    scan_path = WORK / 'scan_mapping.json'
+    if scan_path.exists():
+        with open(scan_path, encoding='utf-8') as f:
+            raw = json.load(f)
+            scan_map = {int(k): v for k, v in raw.items()}
+
+    # 10. 文档检查
     check_completeness(rows, pdf_map, pay_map, scan_map)
 
-    # 5. 加载模板
+    # 11. 加载模板
     if not TEMPLATE.exists():
         die(f'模板不存在: {TEMPLATE}')
     wb = openpyxl.load_workbook(str(TEMPLATE))
     ws = wb.active
 
-    # 清空旧数据和图片
     for mc in list(ws.merged_cells.ranges):
         ws.unmerge_cells(str(mc))
     for r in range(3, 50):
@@ -431,18 +601,18 @@ def main():
     ws._images = []
     ws._drawing = None
 
-    # 6. 填数据
+    # 12. 填数据
     fill_sheet(ws, rows)
 
-    # 7. 嵌图片
+    # 13. 嵌图片
     (WORK / '付款截图').mkdir(exist_ok=True)
     (WORK / '扫描件').mkdir(exist_ok=True)
     embed_images(ws, pdf_map, pay_map, scan_map)
 
-    # 8. 自检
+    # 14. 自检
     file_audit(rows, pdf_map, pay_map, scan_map, unmatched_pdfs)
 
-    # 9. 保存
+    # 15. 保存
     dst = WORK / f'报销-{year_month[2:4]}-{year_month[5:]}.xlsx'
     try:
         wb.save(str(dst))
