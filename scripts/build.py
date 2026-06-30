@@ -31,6 +31,8 @@ DISP_PAIR   = 155          # 双 PDF 显示宽度
 DISP_EXTRA  = 135          # 付款截图 / 扫描件显示宽度
 GAP = 10
 
+# 文件材料要求以 references/document-checklist.md 为单一事实来源。
+# 此字典仅用于运行时自检，修改材料要求时请同步更新 document-checklist.md。
 EXPECTED = {
     '高铁': {'发票': 1, '扫描件': 1, '付款截图': 1},
     '住宿': {'发票': 1, '扫描件': 1, '付款截图': 1},

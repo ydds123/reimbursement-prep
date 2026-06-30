@@ -15,7 +15,9 @@ from pathlib import Path
 import pytesseract
 from PIL import Image, ImageOps, ImageFilter
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+from _ocr_common import configure_tesseract, MATCH_TOLERANCE
+
+configure_tesseract()
 
 WORK = Path(sys.argv[1]).resolve()
 SCAN_DIR = WORK / '扫描件'

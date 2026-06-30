@@ -1,7 +1,7 @@
 # 接口约定
 
 skill: reimbursement-prep
-version: 1.2.0
+version: 1.3.0
 
 inputs:
   work_dir:
@@ -38,11 +38,12 @@ outputs:
         description: 不阻止保存的警告列表
 
 checks:
+  # 详细检查规则以 references/document-checklist.md 为准 — 此处仅列出概要
   fatal:
-    - 每数据行至少一张图片
+    - 每数据行至少一张图片（各费用类型判定逻辑见 document-checklist.md）
     - PDF 文件全部被引用（工作目录下无孤儿 PDF）
     - 映射中 PDF 文件在磁盘存在
   warn:
-    - 文档完整性缺项
+    - 文档完整性缺项（各费用类型四列要求见 document-checklist.md）
     - 孤儿付款截图（磁盘有但未映射）
     - 孤儿扫描件（磁盘有但未映射）

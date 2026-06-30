@@ -14,11 +14,12 @@ from pathlib import Path
 import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+from _ocr_common import configure_tesseract, MATCH_TOLERANCE
+
+configure_tesseract()
 
 WORK = Path(sys.argv[1]).resolve()
 PAY_DIR = WORK / '付款截图'
-MATCH_TOLERANCE = 2.0  # 金额容差（元）
 
 
 def load_rows():
