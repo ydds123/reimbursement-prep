@@ -17,15 +17,21 @@
 
 ### 第一步：安装环境
 
-**Python 依赖：**
+Skill 依赖以下工具完成自动化处理——不是环境装饰，每个包都有具体用途：
+
+| 依赖 | 干什么用 |
+|------|----------|
+| `pypdfium2` | 从电子发票 PDF 中提取内嵌图片（发票截图），供 Excel 嵌入 |
+| `Pillow` | 图片格式转换和尺寸处理 |
+| `openpyxl` | 写入最终 Excel 文件，逐行嵌入发票/行程单/付款截图/扫描件图片 |
+| `pytesseract` | Python 调用 Tesseract OCR 引擎，从手机拍的发票照片中提取发票号码 |
+| Tesseract OCR | OCR 引擎本体，扫描件匹配的核心——没有它扫描件无法自动关联到费用行 |
 
 ```bash
 pip install pypdfium2 Pillow openpyxl pytesseract
 ```
 
-**Windows 额外安装 Tesseract OCR：**
-
-[从 UB-Mannheim 下载安装包](https://github.com/UB-Mannheim/tesseract/wiki)，安装时勾选中文简体语言包 `Chinese (Simplified)`。安装后确认可执行：
+Windows 用户还需安装 Tesseract OCR 本体：[从 UB-Mannheim 下载](https://github.com/UB-Mannheim/tesseract/wiki)，安装时勾选中文简体语言包。验证安装：
 
 ```powershell
 tesseract --version
