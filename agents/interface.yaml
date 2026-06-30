@@ -1,0 +1,48 @@
+# 接口约定
+
+skill: reimbursement-prep
+version: 1.2.0
+
+inputs:
+  work_dir:
+    type: string
+    description: 工作目录绝对路径，必须包含 数据.csv、PDF、付款截图/、扫描件/
+    required: true
+
+  template:
+    type: string
+    description: 模板 Excel 绝对路径；为空时使用 skill 内置模板 scripts/模板.xlsx
+    required: false
+
+outputs:
+  xlsx:
+    type: string
+    description: 生成的报销 Excel 绝对路径
+
+  report:
+    type: object
+    description: 处理报告
+    properties:
+      row_count:
+        type: integer
+      total_amount:
+        type: number
+      doc_completeness:
+        type: object
+        description: 文档完整性检查结果，按行号索引
+      errors:
+        type: array
+        description: 阻止保存的错误列表
+      warnings:
+        type: array
+        description: 不阻止保存的警告列表
+
+checks:
+  fatal:
+    - 每数据行至少一张图片
+    - PDF 文件全部被引用（工作目录下无孤儿 PDF）
+    - 映射中 PDF 文件在磁盘存在
+  warn:
+    - 文档完整性缺项
+    - 孤儿付款截图（磁盘有但未映射）
+    - 孤儿扫描件（磁盘有但未映射）
