@@ -43,11 +43,11 @@ metadata:
 
 ### 阶段 2：数据准备
 
-`数据.csv` 12 列无表头：
+`数据.csv` 13 列无表头：
 ```
 申请人, 使用人, 区域, 报销部门, 建设单位, 金额, YYYY-MM, 一级分类, 二级分类, , 发票号码, 报销明细, 排序键
 ```
-- 第 10 列留空；排序键形如 `2026-06-15-a`
+- 第 10 列留空；排序键形如 `2026-06-15-a`，每行必填
 
 ### 阶段 3：发票 PDF 匹配
 
@@ -71,10 +71,20 @@ Claude 用 `Read` 逐张看图 → 识别金额 → 按行匹配（±2 元容差
 ```
 付款截图压缩度高 + 竖版排版复杂，Tesseract 对其效果很差。**实际场景下月度复用上期映射是更可靠的起点**（见阶段 1）。
 
+**增量处理：** 默认合并已有 `payment_mapping.json`，跳过已映射文件和已覆盖行。如需重新识别所有截图，加 `--overwrite`：
+```powershell
+& python "{skill目录}\scripts\ocr_payments.py" "{工作目录}" --overwrite
+```
+
 ### 阶段 5：扫描件
 
 ```powershell
 & python "{skill目录}\scripts\ocr_scans.py" "{工作目录}"
+```
+
+**增量处理：** 默认合并已有 `scan_mapping.json`，跳过已映射文件和已覆盖行。如需重新识别所有扫描件，加 `--overwrite`：
+```powershell
+& python "{skill目录}\scripts\ocr_scans.py" "{工作目录}" --overwrite
 ```
 
 脚本内置 **3 阶段 Pipeline**（详见 [扫描件匹配策略](references/scan-matching-strategy.md)）：

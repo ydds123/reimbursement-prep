@@ -123,6 +123,8 @@ def match_payments(files, rows):
 
 
 def main():
+    overwrite = '--overwrite' in sys.argv
+
     if not PAY_DIR.exists():
         print(f'付款截图目录不存在: {PAY_DIR}')
         sys.exit(1)
@@ -138,39 +140,64 @@ def main():
     rows = load_rows()
     print(f'数据行: {len(rows)}')
     print(f'付款截图: {len(files)} 张')
-    print()
 
-    # 检查已有映射，跳过已匹配的
+    # 加载已有映射
     existing = {}
     existing_path = WORK / 'payment_mapping.json'
     if existing_path.exists():
         with open(existing_path, encoding='utf-8') as f:
             existing = json.load(f)
-        if existing:
-            print(f'已有映射: {len(existing)} 行，跳过已匹配')
+        nonempty = sum(1 for v in existing.values() if v)
+        if nonempty:
+            if overwrite:
+                print(f'已有映射: {nonempty} 行非空 — 将覆盖（--overwrite）')
+            else:
+                print(f'已有映射: {nonempty} 行非空，跳过这些行（默认）')
+                print(f'  如需覆盖旧映射，使用: python ocr_payments.py <工作目录> --overwrite')
 
-    # 只 OCR 新增文件
-    in_use = {pf for v in existing.values() for pf in v} if existing else set()
-    new_files = [f for f in files if f not in in_use]
+    # 决定要处理的文件和行
+    if overwrite:
+        new_files = files
+        target_rows = rows
+        active_map = {}
+    else:
+        # 跳过已使用的文件
+        in_use_files = set()
+        for v in existing.values():
+            for pf in v:
+                in_use_files.add(pf)
+        new_files = [f for f in files if f not in in_use_files]
+        if len(new_files) < len(files):
+            print(f'  跳过 {len(files) - len(new_files)} 个已使用文件')
+        if not new_files:
+            print('无新增付款截图需要处理')
+            return
+        # 排除已有非空映射的行
+        covered = {int(k) for k, v in existing.items() if v}
+        target_rows = {r: v for r, v in rows.items() if r not in covered}
+        if not target_rows:
+            print('所有数据行已有付款截图映射')
+            return
+        active_map = {int(k): list(v) for k, v in existing.items()}
 
-    if not new_files:
-        print('无新增付款截图')
-        return
-
-    print(f'新增: {len(new_files)} 张')
+    print()
+    print(f'待处理: {len(new_files)} 张新截图 → {len(target_rows)} 行待匹配')
     print()
     print('── OCR 识别 ──')
 
-    new_mapping = match_payments(new_files, rows)
+    new_mapping = match_payments(new_files, target_rows)
 
-    # 合并
+    # 合并：新结果写入 active_map（不覆盖已存在的非空行）
     for r, files_list in new_mapping.items():
-        r_str = str(r)
-        existing[r_str] = files_list
+        active_map[r] = files_list
 
     # 确保所有行都有键
     for r in rows:
-        existing.setdefault(str(r), [])
+        r_str = str(r)
+        existing.setdefault(r_str, [])
+    # 写入 active_map 的结果
+    for r, files_list in active_map.items():
+        existing[str(r)] = files_list
 
     with open(existing_path, 'w', encoding='utf-8') as f:
         json.dump(existing, f, ensure_ascii=False, indent=2)

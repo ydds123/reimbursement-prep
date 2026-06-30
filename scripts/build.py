@@ -50,13 +50,25 @@ def load_csv():
         die(f'{p} 不存在')
     rows = []
     with open(p, encoding='utf-8-sig') as f:
-        for r in csv.reader(f):
+        rdr = csv.reader(f)
+        for linenum, r in enumerate(rdr, start=1):
             if not r or not any(r):
                 continue
-            r[5] = float(r[5])
+            if len(r) != 13:
+                die(f'数据.csv 第 {linenum} 行有 {len(r)} 列（应为 13 列），请检查 CSV 文件')
+            try:
+                r[5] = float(r[5])
+            except (ValueError, IndexError):
+                die(f'数据.csv 第 {linenum} 行金额列（第6列）无法转为数字: "{r[5]}"')
+            if not re.match(r'^\d{4}-\d{2}$', str(r[6])):
+                die(f'数据.csv 第 {linenum} 行月份格式错误 "{r[6]}"（应为 YYYY-MM）')
+            if not str(r[12]).strip():
+                die(f'数据.csv 第 {linenum} 行排序键（第13列）为空，每行必须填写排序键')
             if r[9] == '':
                 r[9] = None
             rows.append(r)
+    if not rows:
+        die('数据.csv 没有有效数据行')
     rows.sort(key=lambda r: r[12])
     return rows
 
@@ -70,9 +82,6 @@ def match_pdfs(rows):
     pdf_paths = {p.name: p for p in pdfs}
     mapping = {}
     assigned = set()
-
-    def row_key(i):
-        return rows[i][12]
 
     # ── 高铁票：纯数字文件名 → K 列票号 ──
     for pdf in pdfs:
@@ -117,20 +126,29 @@ def match_pdfs(rows):
                     assigned.update([inv.name] + ([trv.name] if trv else []))
                     break
 
-    # ── 滴滴：剩余未配 PDF 的"打车"行，按行顺序分配 ──
+    # ── 滴滴：无法通过文件名确定归属，收集待人工确认 ──
     didi_inv  = sorted([p for p in pdfs if '滴滴电子发票' in p.name and p.name not in assigned])
     didi_trv  = sorted([p for p in pdfs if '滴滴出行行程报销单' in p.name and p.name not in assigned])
-    didi_rows = sorted([i for i in range(len(rows))
+    didi_rows = sorted([3 + i for i in range(len(rows))
                         if (3 + i) not in mapping
                         and any(k in rows[i][11] for k in ['滴滴', '打车'])],
-                       key=row_key)
+                       key=lambda r: rows[r - 3][12])
 
-    for inv in didi_inv:
-        trv = didi_trv.pop(0) if didi_trv else None
-        if didi_rows:
-            r = 3 + didi_rows.pop(0)
-            mapping[r] = [inv.name] + ([trv.name] if trv else [])
-            assigned.update([inv.name] + ([trv.name] if trv else []))
+    if didi_inv or didi_trv:
+        review = {
+            "_note": "以下滴滴 PDF 无法通过文件名规则确定归属行，请人工建立映射后写入 pdf_mapping.json",
+            "unmatched_didi_invoices": [p.name for p in didi_inv],
+            "unmatched_didi_travels": [p.name for p in didi_trv],
+            "unmatched_taxi_rows": [{"row": r, "amount": rows[r - 3][5], "desc": rows[r - 3][11]}
+                                    for r in didi_rows],
+        }
+        review_path = WORK / 'pdf_mapping_review.json'
+        with open(review_path, 'w', encoding='utf-8') as f:
+            json.dump(review, f, ensure_ascii=False, indent=2)
+        unmatched.extend([p.name for p in didi_inv])
+        unmatched.extend([p.name for p in didi_trv])
+        print(f'  ⚠ 滴滴 PDF {len(didi_inv)} 张发票 + {len(didi_trv)} 张行程单 无法自动匹配')
+        print(f'  → 已生成 {review_path}，请人工确认后写入 pdf_mapping.json')
 
     unmatched = [p.name for p in pdfs if p.name not in assigned]
     unmapped  = [3 + i for i in range(len(rows)) if (3 + i) not in mapping]
@@ -310,12 +328,21 @@ def check_completeness(rows, pdf_map, pay_map, scan_map):
 # 7. 文件覆盖自检
 # ═══════════════════════════════════════════════════════════════════════
 
+def _row_has_images(row_num, pdf_map, pay_map, scan_map):
+    """某行是否至少有一张真实图片。空数组不算。"""
+    return (
+        len(pdf_map.get(row_num, [])) > 0
+        or len(pay_map.get(row_num, [])) > 0
+        or len(scan_map.get(row_num, [])) > 0
+    )
+
+
 def file_audit(rows, pdf_map, pay_map, scan_map, unmatched_pdfs):
     errors = []
     warnings = []
 
     data_rows = set(range(3, 3 + len(rows)))
-    imaged = set(pdf_map) | set(pay_map) | set(scan_map)
+    imaged = {r for r in data_rows if _row_has_images(r, pdf_map, pay_map, scan_map)}
     for r in sorted(data_rows - imaged):
         errors.append(f'R{r} 无任何图片')
 

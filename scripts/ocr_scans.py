@@ -127,6 +127,8 @@ def classify_scan(text, w, h):
 
 
 def main():
+    overwrite = '--overwrite' in sys.argv
+
     if not SCAN_DIR.exists():
         print(f'扫描件目录不存在: {SCAN_DIR}')
         sys.exit(1)
@@ -135,10 +137,45 @@ def main():
     files = sorted([f for f in os.listdir(SCAN_DIR)
                     if f.lower().endswith(('.jpg', '.jpeg', '.png'))
                     and not f.startswith('_')])
-    print(f'数据行: {len(rows)}  扫描件: {len(files)} 张\n')
+    print(f'数据行: {len(rows)}  扫描件: {len(files)} 张')
 
-    scan_map = {}
-    matched = set()
+    # 加载已有映射
+    existing_path = WORK / 'scan_mapping.json'
+    existing = {}
+    if existing_path.exists():
+        with open(existing_path, encoding='utf-8') as f:
+            raw = json.load(f)
+            existing = {int(k): v for k, v in raw.items()}
+        nonempty = sum(1 for v in existing.values() if v)
+        if nonempty:
+            if overwrite:
+                print(f'已有映射: {nonempty} 行非空 — 将覆盖（--overwrite）')
+            else:
+                print(f'已有映射: {nonempty} 行非空，跳过这些行（默认）')
+                print(f'  如需覆盖旧映射，使用: python ocr_scans.py <工作目录> --overwrite')
+
+    # 决定跳过哪些文件（已使用且非 overwrite 模式）
+    in_use_files = set()
+    if not overwrite:
+        for v in existing.values():
+            for pf in v:
+                in_use_files.add(pf)
+        if in_use_files:
+            skipped = [f for f in files if f in in_use_files]
+            files = [f for f in files if f not in in_use_files]
+            if skipped:
+                print(f'  跳过 {len(skipped)} 个已使用文件')
+            if not files:
+                print('无新扫描件需要处理')
+                return
+
+    print()
+
+    # 从已有映射起始（overwrite 时清空）
+    scan_map = {} if overwrite else {int(k): list(v) for k, v in existing.items()}
+    covered_rows = {r for r, v in scan_map.items() if v} if not overwrite else set()
+    available_rows = {r: info for r, info in rows.items() if r not in covered_rows}
+    matched = in_use_files if not overwrite else set()
     unmatched = []
 
     # ── Phase 1: 快速扫（1x, psm=6, 不反色）──
@@ -148,13 +185,13 @@ def main():
         w, h = img.size
         inv_nums, amounts, text = ocr_one(img, psm_list=[6], upscale=1, invert=False)
 
-        row = match_by_invoice(inv_nums, rows)
+        row = match_by_invoice(inv_nums, available_rows)
         if row:
             scan_map.setdefault(row, []).append(fn)
             matched.add(fn)
             print(f'  {fn[:40]} [INV] → R{row}')
         else:
-            row, dist = match_by_amount(amounts, rows)
+            row, dist = match_by_amount(amounts, available_rows)
             if row and dist <= 2:
                 scan_map.setdefault(row, []).append(fn)
                 matched.add(fn)
@@ -176,14 +213,14 @@ def main():
             all_amt = sorted(set(amounts + amounts2 + amounts3))
             all_text = text + '\n' + text2 + '\n' + text3
 
-            row = match_by_invoice(all_inv, rows)
+            row = match_by_invoice(all_inv, available_rows)
             if row:
                 scan_map.setdefault(row, []).append(fn)
                 matched.add(fn)
                 print(f'  {fn[:40]} [INV2] → R{row}')
                 continue
 
-            row, dist = match_by_amount(all_amt, rows)
+            row, dist = match_by_amount(all_amt, available_rows)
             if row and dist <= 2:
                 scan_map.setdefault(row, []).append(fn)
                 matched.add(fn)
@@ -194,13 +231,13 @@ def main():
 
         unmatched = still_unmatched
 
-    # ── Phase 3: 消元法 ──
+    # ── Phase 3: 消元法 ——
     if unmatched:
         print(f'\n── Phase 3: 消元法 {len(unmatched)} 张 ──')
         typed = [(fn, classify_scan(text, w, h)) for fn, w, h, text in unmatched]
 
-        for row in sorted(rows):
-            info = rows[row]
+        for row in sorted(available_rows):
+            info = available_rows[row]
             need_trip = 1 if info['cat'] == '打车' else 0
             existing = scan_map.get(row, [])
             have_inv = 1 if existing else 0
@@ -229,8 +266,10 @@ def main():
         if remaining:
             print(f'  WARN: {len(remaining)} 张无法自动分配: {[t[0][:25] for t in remaining]}')
 
-    # 确保所有行有键
+    # 确保所有行有键，合并已有映射中未被覆盖的行
     for r in rows:
+        if r not in scan_map and r in existing:
+            scan_map[r] = existing[r]
         scan_map.setdefault(r, [])
 
     # 写入
