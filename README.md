@@ -13,44 +13,96 @@
 - 发票号与费用行的自动匹配
 - 扫描件 OCR 识别与归档
 
-## 快速开始
+## 使用流程
 
-### 环境
+### 第一步：安装环境
+
+**Python 依赖：**
 
 ```bash
 pip install pypdfium2 Pillow openpyxl pytesseract
 ```
 
-Windows 需额外安装 [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)。
+**Windows 额外安装 Tesseract OCR：**
 
-### 工作目录结构
+[从 UB-Mannheim 下载安装包](https://github.com/UB-Mannheim/tesseract/wiki)，安装时勾选中文简体语言包 `Chinese (Simplified)`。安装后确认可执行：
 
-```
-{工作目录}/
-├── 数据.csv                  # 12 列无表头费用数据
-├── 内容/  或  *.pdf           # 电子发票/行程单 PDF
-├── 付款截图/                  # 微信/支付宝 .jpg
-├── 扫描件/                    # 手机相机直出 .jpg
-├── payment_mapping.json       # 付款截图→行号映射
-└── scan_mapping.json          # 扫描件→行号映射
+```powershell
+tesseract --version
 ```
 
-### 运行
+### 第二步：安装 Skill
 
-通过 Claude Code 加载本 skill：
+```bash
+npx skills add ydds123/reimbursement-prep -g
+```
+
+### 第三步：准备材料
+
+创建一个工作目录，放入以下材料：
+
+```
+2026年06月报销/
+├── 数据.csv                # 费用明细（12 列无表头）
+├── 内容/  或  *.pdf         # 电子发票 PDF、行程单 PDF
+├── 付款截图/                # 微信/支付宝支付截图 .jpg
+└── 扫描件/                  # 手机拍照的发票/小票 .jpg
+```
+
+`数据.csv` 格式（12 列无表头）：
+```
+申请人, 使用人, 区域, 报销部门, 建设单位, 金额, YYYY-MM, 一级分类, 二级分类, , 发票号码, 报销明细, 排序键
+```
+- 第 10 列留空
+- 排序键形如 `2026-06-15-a`，控制 Excel 行顺序
+
+### 第四步：运行
+
+在 Claude Code 中输入：
 
 ```
 /reimbursement-prep
 ```
 
-然后按提示提供工作目录路径。Skill 会自动：
+然后告诉 Claude 你的工作目录路径，例如 `E:\报销\2026年06月报销`。
 
-1. 检查依赖环境
-2. PDF 发票按文件名规则匹配到费用行
-3. 付款截图通过 AI 视觉识别金额匹配
-4. 扫描件通过 Tesseract OCR 提取发票号匹配（三阶段 Pipeline：快速→深搜→消元）
-5. 文档完整性检查（缺项警告不阻止）
-6. 生成带嵌入式图片的 Excel
+### 第五步：等待自动处理
+
+Skill 会按以下顺序自动处理，全程无需手动操作：
+
+| 阶段 | 做什么 | 耗时 |
+|------|--------|------|
+| 环境确认 | 检查 Python 依赖、Tesseract 是否就绪 | 几秒 |
+| PDF 匹配 | 按文件名规则自动匹配高铁票号、dzfp 发票号、滴滴日期等到费用行的发票号列 | 几秒 |
+| 付款截图 | AI 逐张看图识别金额 → 按金额 ±2 元容差匹配到费用行 → 写入 `payment_mapping.json` | 1-3 分钟 |
+| 扫描件 OCR | Tesseract 三阶段 Pipeline 提取发票号 → 匹配费用行 → 消元补位 → 写入 `scan_mapping.json` | 2-5 分钟 |
+| 文档完整性检查 | 逐行检查每笔费用是否集齐发票、行程单、付款截图、扫描件四类材料，缺项列出清单 | 几秒 |
+| 生成 Excel | 按模板排版，嵌入所有发票/行程单/付款截图/扫描件图片到对应行 | 十几秒 |
+
+### 第六步：检查与交付
+
+Skill 生成后会输出检查结果：
+- 致命问题（如某行完全没有匹配到任何图片文件）→ 需修正后重新生成
+- 缺项警告（如某行缺扫描件但其他三类齐全）→ 不阻塞，列出清单供参考
+
+确认无误后，输出文件 `报销-{YY}-{MM}.xlsx` 即可提交财务。
+
+### 月度复用
+
+同一项目连续月份报销时，可以从上期工作目录复制 `payment_mapping.json` 和 `scan_mapping.json` 作为起点——往年同月商户通常相同，大部分映射可直接复用，仅需 AI 处理新增的几张截图。
+
+## 工作目录完整结构
+
+```
+{工作目录}/
+├── 数据.csv                     # 费用数据（12 列无表头）
+├── 报销-{YY}-{MM}.xlsx          # 最终交付物
+├── 内容/  或  *.pdf              # 电子发票/行程单 PDF
+├── 付款截图/                     # 微信/支付宝 .jpg
+├── 扫描件/                       # 手机相机直出 .jpg
+├── payment_mapping.json          # 付款截图→行号映射
+└── scan_mapping.json             # 扫描件→行号映射
+```
 
 ## 技术点
 
@@ -66,7 +118,7 @@ Windows 需额外安装 [Tesseract OCR](https://github.com/UB-Mannheim/tesseract
 - 图片不压缩像素，仅控制 Excel 显示尺寸
 - 不改源模板；`build.py` 固定不变，只更新 JSON 映射
 - 不自动删文件；缺项/多余不阻止生成
-- 月度复用优先从上期复制映射文件
+- 付款截图 OCR 实用性低（~10%），月度复用优先复制上期映射
 
 ## 许可
 
