@@ -178,6 +178,17 @@ def main():
     matched = in_use_files if not overwrite else set()
     unmatched = []
 
+    # ── 行容量：打车行需要 2 张，其他行 1 张 ──
+    def _row_demand(row_num):
+        info = rows.get(row_num) if row_num in rows else available_rows.get(row_num)
+        if info is None:
+            return 1
+        return 2 if info.get('cat') == '打车' else 1
+
+    def _remove_if_full(row_num):
+        if row_num in available_rows and len(scan_map.get(row_num, [])) >= _row_demand(row_num):
+            del available_rows[row_num]
+
     # ── Phase 1: 快速扫（1x, psm=6, 不反色）──
     print('── Phase 1: 快速 OCR (psm=6) ──')
     for fn in files:
@@ -189,12 +200,14 @@ def main():
         if row:
             scan_map.setdefault(row, []).append(fn)
             matched.add(fn)
+            _remove_if_full(row)
             print(f'  {fn[:40]} [INV] → R{row}')
         else:
             row, dist = match_by_amount(amounts, available_rows)
             if row and dist <= 2:
                 scan_map.setdefault(row, []).append(fn)
                 matched.add(fn)
+                _remove_if_full(row)
                 print(f'  {fn[:40]} [AMT] → R{row} Δ{dist:.2f}')
             else:
                 unmatched.append((fn, img, w, h, inv_nums, amounts, text))
@@ -217,6 +230,7 @@ def main():
             if row:
                 scan_map.setdefault(row, []).append(fn)
                 matched.add(fn)
+                _remove_if_full(row)
                 print(f'  {fn[:40]} [INV2] → R{row}')
                 continue
 
@@ -224,6 +238,7 @@ def main():
             if row and dist <= 2:
                 scan_map.setdefault(row, []).append(fn)
                 matched.add(fn)
+                _remove_if_full(row)
                 print(f'  {fn[:40]} [AMT2] → R{row} Δ{dist:.2f}')
                 continue
 
@@ -237,30 +252,35 @@ def main():
         typed = [(fn, classify_scan(text, w, h)) for fn, w, h, text in unmatched]
 
         for row in sorted(available_rows):
+            if row not in available_rows:
+                continue
             info = available_rows[row]
-            need_trip = 1 if info['cat'] == '打车' else 0
+            need = _row_demand(row)
             existing = scan_map.get(row, [])
-            have_inv = 1 if existing else 0
-            have_trip = 1 if len(existing) >= 2 else 0
 
-            if have_inv == 0:
+            # 发票位：行尚未填满时，优先分配发票类型的扫描件
+            if len(existing) < need:
                 candidates = [t for t in typed if t[1] in ('发票', '高铁票', '住宿票', '?') and t[0] not in matched]
                 if candidates:
                     pick = candidates[0]
                     scan_map.setdefault(row, []).append(pick[0])
                     matched.add(pick[0])
                     typed.remove(pick)
+                    _remove_if_full(row)
                     print(f'  {pick[0][:40]} [ELIM] → R{row} (发票)')
 
-            if need_trip and have_trip == 0:
-                # 行程单 OCR 不稳定，'发票' 类型的横版也可能是行程单
-                candidates = [t for t in typed if t[0] not in matched]
-                if candidates:
-                    pick = candidates[0]
-                    scan_map.setdefault(row, []).append(pick[0])
-                    matched.add(pick[0])
-                    typed.remove(pick)
-                    print(f'  {pick[0][:40]} [ELIM] → R{row} (行程单)')
+            # 行程单位：打车行且尚未填满，剩余未匹配的均可补位
+            if row in available_rows and info['cat'] == '打车':
+                existing2 = scan_map.get(row, [])
+                if len(existing2) < need:
+                    candidates = [t for t in typed if t[0] not in matched]
+                    if candidates:
+                        pick = candidates[0]
+                        scan_map.setdefault(row, []).append(pick[0])
+                        matched.add(pick[0])
+                        typed.remove(pick)
+                        _remove_if_full(row)
+                        print(f'  {pick[0][:40]} [ELIM] → R{row} (行程单)')
 
         remaining = [t for t in typed if t[0] not in matched]
         if remaining:

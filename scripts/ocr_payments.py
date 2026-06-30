@@ -107,6 +107,8 @@ def match_payments(files, rows):
         for r, target in uncovered.items():
             best_pair, best_dist = None, 999
             for f1, f2 in combinations(unmatched, 2):
+                if f1 in matched_files or f2 in matched_files:
+                    continue  # 已被前面的拼单使用
                 a1 = ocr_results[f1][0] if ocr_results[f1] else 0
                 a2 = ocr_results[f2][0] if ocr_results[f2] else 0
                 d = abs(a1 + a2 - target)

@@ -145,8 +145,6 @@ def match_pdfs(rows):
         review_path = WORK / 'pdf_mapping_review.json'
         with open(review_path, 'w', encoding='utf-8') as f:
             json.dump(review, f, ensure_ascii=False, indent=2)
-        unmatched.extend([p.name for p in didi_inv])
-        unmatched.extend([p.name for p in didi_trv])
         print(f'  ⚠ 滴滴 PDF {len(didi_inv)} 张发票 + {len(didi_trv)} 张行程单 无法自动匹配')
         print(f'  → 已生成 {review_path}，请人工确认后写入 pdf_mapping.json')
 
