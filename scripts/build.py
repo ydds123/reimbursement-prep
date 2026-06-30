@@ -216,7 +216,22 @@ def load_pdf_mapping(name, valid_rows, all_pdf_paths, auto_pdf_map=None):
     if errors:
         return manual_map, errors, warnings
 
-    # 6. 人工覆盖自动映射时提示
+    # 6. 人工映射 vs 自动映射冲突检测（同一 PDF 被分配到不同行）
+    if auto_pdf_map:
+        auto_pdf_owner = {}
+        for auto_row, files in (auto_pdf_map or {}).items():
+            for fn in files:
+                auto_pdf_owner[fn] = auto_row
+        for manual_row, files in manual_map.items():
+            for fn in files:
+                if fn in auto_pdf_owner and auto_pdf_owner[fn] != manual_row:
+                    errors.append(
+                        f'{name} R{manual_row} 引用了已自动映射到 R{auto_pdf_owner[fn]} 的 PDF: {fn}')
+
+    # 7. 人工覆盖自动映射时提示（同行的不同值才报 warning）
+    if errors:
+        return manual_map, errors, warnings
+
     if auto_pdf_map:
         for row in manual_map:
             if manual_map[row] and row in auto_pdf_map and auto_pdf_map[row]:
@@ -240,6 +255,7 @@ def write_pdf_review_if_needed(rows, pdf_map):
     didi_inv  = sorted([fn for fn in still_unmatched if '滴滴电子发票' in fn])
     didi_trv  = sorted([fn for fn in still_unmatched if '滴滴出行行程报销单' in fn])
     # 高德相关（也属于无法自动匹配的聚合打车类）
+    gaode_pdfs = sorted([fn for fn in still_unmatched if '高德' in fn])
     other_unmatched = sorted([fn for fn in still_unmatched
                              if '滴滴' not in fn and '高德' not in fn])
 
@@ -257,12 +273,13 @@ def write_pdf_review_if_needed(rows, pdf_map):
         "_note": "当前仍有以下 PDF 无法自动确定归属行，请人工确认后写入 pdf_mapping.json。已写入 pdf_mapping.json 的 PDF 不会出现在此清单中。",
         "pending_didi_invoices": didi_inv,
         "pending_didi_travels": didi_trv,
+        "pending_gaode_pdfs": gaode_pdfs,
         "other_unmatched_pdfs": other_unmatched,
         "unmapped_taxi_rows": unmapped_taxi_rows,
     }
 
     review_path = WORK / 'pdf_mapping_review.json'
-    if didi_inv or didi_trv:
+    if didi_inv or didi_trv or gaode_pdfs:
         with open(review_path, 'w', encoding='utf-8') as f:
             json.dump(review, f, ensure_ascii=False, indent=2)
         print(f'  → 已刷新 {review_path}')
